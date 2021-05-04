@@ -1,0 +1,560 @@
+---
+title: "Early modern routing with Viabundus and sfnetworks"
+author: "R package build"
+date: '2021-05-03'
+slug: early-modern-routing-with-viabundus-and-sfnetworks
+categories: []
+tags: []
+subtitle: ''
+summary: ''
+authors: []
+lastmod: '2021-05-03T15:12:07+02:00'
+featured: no
+image:
+  caption: ''
+  focal_point: ''
+  preview_only: no
+projects: []
+---
+
+The last couple of months have been particularly good ones for anyone working with spatial and historical data: An major new 'online streetmap' of early modern Northern Europe, [Viabundus](https://www.landesgeschichte.uni-goettingen.de/handelsstrassen/index.php), was released at the end of April, about a month after the first CRAN release of an R package called [sfnetworks](https://github.com/luukvdmeer/sfnetworks). This package and dataset seem made for each other: with some pretty basic code I've been able to do some really fun things. 
+
+# sfnetworks package
+
+The ```stnetworks``` package has been in development for some time, but the first I heard of it was in March when they announced the first CRAN release (which means it's in R's 'official' list of packages that can be installed through the programming language itself). Essentially, two of my favourite packages,  ```sf``` for spatial analysis and ```tidygraph``` for networks, have got together and had a baby: ```sfnetworks``` combines both packages, providing a really easy interface for performing spatial network analysis tasks such as calculating shortest paths. 
+
+As I wrote in an [earlier post](https://yann-ryan.github.io/post/my-network-analysis-workflow/), ```tidygraph``` allows you to perform network analysis within a tidy data workflow, by linking together a nodes table and an edges table, allows you to switch between the two and easily do typical data analysis tasks such as grouping and filtering, directly to the network itself.
+
+```sfnetworks``` extends this idea by making the nodes and edges tables into [simple features](https://en.wikipedia.org/wiki/Simple_Features) spatial objects: the nodes table becomes a table of spatial points, and the edges table one of spatial lines. You can also just supply one or the other and it'll automatically make the second - so for example if you supply a table of spatial points, it'll draw implicit edges between them, and, conversely, if you supply a dataset of spatial lines, it'll give you a table of nodes, consisting of all the start and end points of each of the lines. Simple features objects are particularly easy to work with thanks to the R package sf: the sfnetworks format lets you leverage all the great GIS analysis from sf along with network-specific tasks.
+
+The examples below are all based on the [package vignettes](https://luukvdmeer.github.io/sfnetworks/articles/structure.html) and the result of a couple of days playing around. I highly recommend taking a look at these to understand the full data structure - which I have simplified and, I'm sure in parts, misunderstood. 
+
+# Viabundus
+
+As luck would have it, the data type needed for sfnetworks is pretty similar to the second resource I mentioned, Viabundus. Viabundus is the result of a four-year project by a group of researchers in Universities across Europe, which the creators describe as a 'online street map of late medieval and early modern northern Europe (1350-1650)'. It's an atlas of early modern roads, which have been digitised and converted into a nifty [online map](https://www.landesgeschichte.uni-goettingen.de/handelsstrassen/map.php) which allows you to calculate routes across Northern Europe, including travel times, tolls passed, fairs visited, to a pretty mind-boggling level of detail. Basically Google Maps for the seventeenth-century.
+
+Alongside the map, the team have released the dataset as Open Access (CC-BY-SA) data. There's extensive [documentation](https://www.landesgeschichte.uni-goettingen.de/handelsstrassen/index.php#documentation), but in essence, to reconstruct the basic map and perform spatial analysis with it, the data contains two key tables: one edges table, the roads, and one nodes table, the towns, markets, bridges and other points through which the routes pass. As I said - conveniently this is more or less the data structure required as an input for ```sfnetworks```. The rest of this post is a short demonstration on how the two can be used together.
+
+# Create a ```sfnetworks``` object from Viabundus data
+
+The data is freely available [here](https://www.landesgeschichte.uni-goettingen.de/handelsstrassen/index.php#download), with a CC-BY-SA licence. I recommend having a good read of the documentation to understand all the additional tables, but the ones we'll use today are the two main ones: the nodes and edges. First, import them into R:
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+nodes = read_csv('/Users/yannryanpersonal/Documents/r-studio/Viabundus-1.0-CSV/Nodes.csv')
+edges = read_csv('/Users/yannryanpersonal/Documents/r-studio/Viabundus-1.0-CSV/Edges.csv')
+```
+
+Next, you need to convert them into ```sf``` objects. The geographic data in the Viabundus edges table is supplied in a format called 'Well Known Text' (WKT). The sf package supports this as a data input - just supply the column containing the spatial data as the argument ```wkt = ```. In this case, the WKT column in the edges table is also called WKT. Use ```st_set_crs``` to set the Coordinate Reference System, which needs to be the same for both tables.
+
+```{r message=FALSE, warning=FALSE}
+library(sf)
+edges_sf = edges %>% st_as_sf(wkt = "WKT")
+edges_sf = edges_sf %>% st_set_crs(4326)
+```
+
+The nodes table doesn't use WKT, but contains a regular latitude and longitude column. Use ```st_as_sf``` again, and supply the column names to the ```coords = ``` argument. 
+
+```{r message=FALSE, warning=FALSE}
+nodes_sf = nodes %>% st_as_sf(coords = c('Longitude', 'Latitude'))
+nodes_sf = nodes_sf %>% st_set_crs(4326)
+```
+
+To create the sfnetworks object, you supply data in one of a number of forms. The most complete is to supply a both a table of edges and a table of nodes. The edges table should contain 'from' and 'to' columns, corresponding to the node IDs in the node table, which will link them together. 
+
+As far as I can tell, the Viabundus data doesn't explicitly connect the nodes and edges data like this. I've used a sort of work-around to get around this.
+
+First, use ```as_sfnetwork``` to create an sfnetwork from the edges table alone.
+
+```{r message=FALSE, warning=FALSE}
+library(sfnetworks)
+sf_net = as_sfnetwork(edges_sf, directed = F)
+
+sf_net
+```
+
+Looking at the data, you can see it has created a simple nodes table of all the start and end points of the spatial lines in the edges table. We need to know what towns and other points correspond to these nodes. 
+
+To do this, I used the ```sf``` function ```st_join```. Use the join function 'nearest feature', which will link the sfnetwork nodes table to the closest point in the original Viabundus nodes table. This is the best method I could think of for now, though it's not perfect—it would be better if there was an explicit link between the nodes and edges table, which I haven't been able to figure out.
+
+```{r message=FALSE, warning=FALSE}
+sf_net = sf_net %>% 
+  st_join(nodes_sf, join = st_nearest_feature)
+```
+
+One of the key things which makes a spatial network object different to a regular network object is that we treat the length of each edge as a weight. This can be done automatically with sfnetworks using  ```edge_length```,  though the Viabundus edges table has a column with this information already.
+
+```{r message=FALSE, warning=FALSE}
+sf_net = sf_net %>%
+  activate("edges") %>%
+  mutate(weight = edge_length())
+```
+
+# Network Calculations
+
+This new object can be used to calculate regular network analysis metrics, such as betweenness centrality, using the same set of functions as ```tidygraph```:
+
+```{r message=FALSE, warning=FALSE}
+library(tidygraph)
+library(kableExtra)
+betweenness_scores = sf_net %>% 
+  activate(nodes) %>% 
+  mutate(betweenness = centrality_betweenness(weights = NULL)) %>% 
+  as_tibble() %>% 
+  arrange(desc(betweenness)) %>% 
+  filter(Is_Town == 'y') %>% head(10)
+
+betweenness_scores %>% st_drop_geometry() %>% select(Name, betweenness) %>% kbl(caption = "Nodes with highest betweenness scores:")
+```
+
+Or color all nodes on their betweenness score, and display on a map:
+
+```{r message=FALSE, warning=FALSE}
+betweenness_sf = sf_net %>% 
+  activate(nodes) %>% 
+  mutate(betweenness = centrality_betweenness(weights = NULL)) %>%
+  as_tibble()
+
+ggplot() + geom_sf(data = betweenness_sf, aes(color = betweenness), alpha =  .8) + scale_color_viridis_c() +theme_void() + labs(title  = "Viabundus Network, Betweenness Centrality Scores", caption = 'Made with data from Viabundus.eu') + theme(title = element_text(size = 14, face = 'bold'))
+```
+
+
+Interestingly, the highest betweenness nodes all seem to fall along a single path. Is this a particularly important trunk road? We can also plot the whole network. To use ggplot, create separate nodes and edges tables using ```as_tibble```, and add them as separate geoms to the same plot:
+
+```{r message=FALSE, warning=FALSE}
+ggplot() + 
+  geom_sf(data = sf_net %>% activate(nodes) %>% as_tibble(), alpha =  .1, size  = .01)  + 
+  geom_sf(data = sf_net %>% activate(edges) %>% as_tibble(), alpha = .5) +theme_void() + 
+  labs(title  = "Viabundus Network, All Routes", caption = 'Made with data from Viabundus.eu') + 
+  theme(title = element_text(size = 14, face = 'bold'))
+```
+
+# Shortest-path calculation  
+
+The nicest application of these two resources I've found so far is to use ```sfnetworks``` to calculate the shortest path between any set of points in the network. This uses [Dijkstra's algorithm](https://en.wikipedia.org/wiki/Dijkstra%27s_algorithm), along with the lengths of the spatial lines as weights (or impedance), to calculate the shortest route between any two points (or from one start point to a range of end points). This is done with the function ```st_shortest_paths```.
+
+```st_network_paths``` takes ```from``` and ```to``` arguments, using the node ID from the nodes table. You'll need to figure out some way to find the relevant node IDs to enter here—the most convenient way I've found is first to make a copy of just the nodes table:
+
+```{r message=FALSE, warning=FALSE}
+nodes_lookup_table = sf_net %>% activate(nodes) %>% as_tibble()
+```
+
+The ID you need is the row index - create a column called node_id containing this info:
+
+```{r message=FALSE, warning=FALSE}
+nodes_lookup_table  = nodes_lookup_table %>% mutate(node_id = 1:nrow(.))
+```
+
+Looking at the table, you'll see that sometimes the same place has been assigned to multiple closest coordinates. For now, I'm just going to pick the first one.
+
+```{r message=FALSE, warning=FALSE}
+utrecht_node_id = nodes_lookup_table %>% filter(Name == 'Utrecht') %>% head(1) %>% pull(node_id)
+```
+
+```{r message=FALSE, warning=FALSE}
+hamburg_node_id = nodes_lookup_table %>% filter(Name == 'Hamburg') %>% head(1) %>% pull(node_id)
+```
+
+Run ```st_network_paths``` supplying the points you want to calculate the route between as from and to arguments:
+
+```{r message=FALSE, warning=FALSE}
+paths = st_network_paths(sf_net, from =utrecht_node_id, to = hamburg_node_id)
+
+paths
+```
+
+The result of st_network_paths is a dataframe with two columns, each containing a vector of edge or node IDs. First convert each into a dataframe with a single columns of IDs:
+
+```{r message=FALSE, warning=FALSE}
+ node_list = paths %>%
+  slice(1) %>%
+  pull(node_paths) %>%
+  unlist() %>% as_tibble()
+
+edge_list = paths %>%
+  slice(1) %>%
+  pull(edge_paths) %>%
+  unlist() %>% as_tibble()
+```
+
+Use ```inner join()``` to attach the edge and  node IDs in the route to the edge and nodes tables from the sfnetwork object. You'll need to recreate them as sf objects:
+
+```{r message=FALSE, warning=FALSE}
+line_to_draw = edge_list %>% inner_join(sf_net %>% 
+  activate(edges) %>% 
+  as_tibble() %>% 
+  mutate(edge_id = 1:nrow(.)) , by = c('value' = 'edge_id'))
+
+line_to_draw = line_to_draw %>% st_as_sf()
+line_to_draw = line_to_draw %>% st_set_crs(4326)
+
+nodes_to_draw = node_list %>% inner_join(sf_net %>% 
+  activate(nodes) %>% 
+  as_tibble() %>% 
+  mutate(node_id = 1:nrow(.)) , by = c('value' = 'node_id'))
+
+nodes_to_draw = nodes_to_draw %>% st_as_sf()
+nodes_to_draw = nodes_to_draw %>% st_set_crs(4326)
+```
+
+Plot this using Leaflet:
+
+```{r message=FALSE, warning=FALSE}
+library(leaflet)
+
+leaflet() %>% 
+  addTiles() %>% 
+  addCircles(data = nodes_to_draw, label = ~Name) %>% 
+  addPolylines(data  = line_to_draw)
+```
+
+# Constructing an itinerary using the node information
+
+The paths object gives both the roads (edges/lines) and towns or other points of interest passed  (nodes). We can use the additional data from the list of nodes to get more information on the route along the way. 
+
+First, it's worth taking a closer look at the nodes data. 
+
+```{r message=FALSE, warning=FALSE}
+nodes_lookup_table %>% glimpse()
+```
+
+There are a large number of types of node, including town, settlement, bridge, harbour, ferry, and lock. Using the types will help to plan out a proper itinerary for the route.
+
+There's also dates from/to fields for each type, which means we can draw up an itinerary for a specific time period. From what I can tell, the official Viabundus map takes into account the infrastructure types in the node list (locks, bridges and ferries etc) and draws up a route which would have used the correct network at a specified date, but I haven't figured out how to do that yet. 
+
+The Viabundus data format is quite 'wide', which  makes it difficult to easily filter. Each place can be multiple types, with multiple start and end points. To make it easier to work with, I used ```pivot_longer``` to make the data long, in a couple of steps. 
+
+First, I turned all the From/To columns into a pair: one column for the type of node, and a second for the value:
+
+```{r message=FALSE, warning=FALSE}
+nodes_to_draw = nodes_to_draw %>% map_df(rev) # The route is in reverse order - switch this around
+
+long_data = nodes_to_draw %>% mutate(order = 1:nrow(.)) %>% 
+  pivot_longer(names_to = 'data_type' , values_to = 'value_of', cols =matches("From$|To$", ignore.case = F))
+
+long_data %>% select(Name, data_type, value_of) %>% head(10) %>% kbl()%>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+
+```
+Next I used ```ifelse``` to filter the value column in a different way depending on whether it was a to date or a from date:
+
+```{r message=FALSE, warning=FALSE}
+long_data  = long_data %>% 
+  mutate(date_type = ifelse(str_detect(data_type, "From$"), 'from', 'to')) %>% 
+  filter(date_type == 'from' & value_of < 1600 | data_type == 'to' & value_of >1600| is.na(value_of))
+
+```
+
+Using, this, we can easily list each place visited:
+
+```{r message=FALSE, warning=FALSE}
+library(htmltools)
+long_data %>% distinct(order, .keep_all = T) %>% select(order, Name) %>% filter(!is.na(Name)) %>% distinct(Name) %>% kbl() %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))%>%
+  scroll_box(height = "400px")
+```
+
+Another useful task is to make a nice summary of the places visited and their types. To do this easily, the data needs to be made 'longer' again. This time, we want a pair of columns where one is the node type, and the other is whether it is a 'y' or simply empty. 
+
+```{r message=FALSE, warning=FALSE}
+longer_data = long_data %>% pivot_longer(names_to = 'node_type', values_to = 'type', cols = matches('^Is_'))
+
+longer_data %>% select(Name, node_type, type) %>% head(10) 
+```
+
+You'll notice that Hamburg now has multiple repeated entries for each of the types, because we had already duplicated the data in the previous step, when making the dates long. This will need to be fixed for counts.
+
+First, filter out any entries where the type is NA (this means that particular place was not that type):
+
+```{r message=FALSE, warning=FALSE}
+
+longer_data = longer_data %>% filter(!is.na(type))
+```
+
+Now we can add all the node types associated with each place, using ```summarise```. We need to use ```unique``` too, and then it'll just print one instance of each type for each place:
+
+```{r message=FALSE, warning=FALSE}
+longer_data %>% 
+  group_by(order) %>% 
+  summarise(Name = max(Name),types = paste0(unique(node_type), collapse = '; ')) %>% filter(!is.na(Name)) %>% kbl()%>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))%>%
+  scroll_box(height = "400px")
+```
+
+Tidy data also allows us to count the totals for each type of node passed. Again, we want to remove the duplicated data which is easy to do with ```distinct```
+
+```{r message=FALSE, warning=FALSE}
+longer_data %>% distinct(order, node_type) %>% group_by(node_type) %>% tally() %>% kbl()%>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+# Estimate Travel Times
+
+We can use this info on the nodes passed plus the road lengths to estimate the total travel time. 
+
+First, get the total distance (note that everything is in metres for now):
+
+```{r message=FALSE, warning=FALSE}
+distance = line_to_draw %>% tally(Length) %>% pull(n)
+```
+
+Viabundus suggests 5km per hour for wagons, up to a maximum of 35km per day. 
+
+```{r message=FALSE, warning=FALSE}
+time_taken_in_hours = distance / 5000
+
+time_taken_in_days = time_taken_in_hours/7
+```
+
+Passing through certain nodes slow you down, according to the Viabundus documentation. [Staples](https://en.wikipedia.org/wiki/Staple_right) forced merchants to stop for three days, and ferries add an hour for loading/unloading. We can use the lists generated above to add the correct time penalties:
+
+```{r message=FALSE, warning=FALSE}
+staples = longer_data %>% 
+  distinct(order, node_type) %>% 
+  filter(node_type == 'Is_Staple') %>% 
+  tally() %>% pull(n)
+
+ferries = longer_data %>% 
+  distinct(order, node_type) %>% 
+  filter(node_type == 'Is_Ferry') %>% 
+  tally() %>% pull(n)
+
+ferries = ferries /24
+
+total_time_taken = time_taken_in_days + staples+ ferries
+
+paste0("Total time taken (in days): ", total_time_taken)
+```
+
+# Calculating all daily travel rates 
+
+```sfnetworks``` also has some functions for calculating the 'neighbourhood' of a node - the number of nodes reachable within a specified distance.
+
+Using the code from the package vignette, I visualised the maximum one could travel from Utrecht in steps of a day for up to 10 days, ignoring staple stops:
+
+Download a map of the world to use as a backdrop: 
+
+```{r message=FALSE, warning=FALSE}
+library(rnaturalearth)
+library(rnaturalearthdata)
+
+map = rnaturalearth::ne_coastline(returnclass = 'sf', scale = 'medium')
+map = map %>% st_set_crs(4326)
+
+```
+
+Get a set of coordinates for Utrecht, in sf form:
+
+```{r message=FALSE, warning=FALSE}
+utrecht_point = sf_net %>% activate(nodes) %>% filter(Name == 'Utrecht') %>%
+  st_geometry() %>%
+  st_combine() %>% 
+  st_centroid()
+
+```
+
+Make a list of the 'thresholds': a sequence of distances which will be fed to a for loop to calculate ten separate 'neighborhood' objects. The thresholds are each 35,000 metres long, corresponding to the maximum speed per day:
+
+```{r message=FALSE, warning=FALSE}
+
+thresholds = rev(seq(0, 350000, 35000))
+palette = sf.colors(n = 10)
+
+```
+
+Run the for loop, which will generate 10 separate network objects calculating the neighborhood of nodes from our starting point, and put them in a single list, with an additional 'days' column.
+
+```{r message=FALSE, warning=FALSE}
+nbh = list()
+
+
+for (i in c(1:10)) {
+  nbh[[i]] = convert(sf_net, to_spatial_neighborhood, utrecht_point, thresholds[i])
+   nbh[[i]] =  nbh[[i]] %>% st_set_crs(4326)
+   nbh[[i]] = nbh[[i]] %>% activate(edges) %>% as_tibble() %>% mutate(days = 10-(i-1))
+   
+}
+
+```
+
+Use ```rbindlist()``` from ```data.table``` to merge them into one large spatial object:
+
+```{r}
+library(data.table)
+all_neighborhoods = rbindlist(nbh)
+all_neighborhoods = st_as_sf(all_neighborhoods)
+all_neighborhoods = all_neighborhoods %>% st_set_crs(4326)
+```
+
+Plot the results:
+
+```{r message=FALSE, warning=FALSE}
+p = ggplot() + 
+  geom_sf(data = map) + 
+  geom_sf(data = all_neighborhoods, aes(color = days)) + 
+  coord_sf(xlim = c(0, 11), ylim = c(50, 54))+ theme_void() + 
+  labs(title  = "Maximum Distance Reached From Utrecht,\nby Cart or Wagon", color = 'Days:', caption = 'Made with data from Viabundus.eu') + 
+  theme(title = element_text(size = 14, face = 'bold')) + 
+  scale_color_viridis_c(direction = -1, option = 'A', breaks = 1:10) + 
+  guides(color = guide_colorsteps(barwidth = '20', barheight = .5)) + 
+  theme(legend.position = 'bottom') 
+
+p
+```
+
+# Calculating elevation data
+
+A few more R packages allow us to estimate the elevation travelled during the trip, which can also come in handy for understanding likely routes and travel times. Load the ```elevatr``` and ```slopes``` packages.
+
+
+```{r}
+library(elevatr)
+library(slopes)
+
+```
+
+Take the spatial lines data created above, and reverse it, because the path is reversed by default:
+
+```{r}
+line_to_draw = line_to_draw %>% map_df(rev)
+
+line_to_draw = line_to_draw %>% st_as_sf()
+line_to_draw = line_to_draw %>% st_set_crs(4326)
+
+
+```
+
+The ```get_elev_raster``` function takes a different spatial object, called a SpatialLinesDataFrame. Create this using ```as('Spatial')```:
+
+```{r}
+sp_edges = line_to_draw  %>% as('Spatial')
+
+```
+
+Now, download elevation data using ```get_elev_raster```. This function takes the spatial object and downloads the relevant elevation data as a raster file from an online service. We can specify the zoom level (higher numbers mean a larger download) and the src, which is the data source, in this case Mapzen tiles hosted on Amazon Web Services. 
+
+```{r}
+elevation = get_elev_raster(sp_edges, z=9, src = "aws")
+
+```
+
+With this info, create a new 'slope' column using ```slope_raster``` and the raster we've just downloaded. 
+
+```{r}
+line_to_draw$slope = slope_raster(line_to_draw, e = elevation)
+
+```
+
+Use the function ```slope_3d``` to estimate elevation data using the slopes, and add it as a Z axis to the lines sf object.
+
+```{r}
+line_to_draw_3d = slope_3d(line_to_draw, elevation)
+
+```
+
+Plot the result using ```plot_slope```:
+
+```{r}
+plot_slope(line_to_draw_3d, title = "Elevation Data, Utrecht to Hamburg")
+
+```
+
+# Using Slope Data in the Shortest-Path Routing
+
+We can also supply elevation data as part of the weight used by the shortest-path algorithm - letting us help an early modern trader avoid pesky hills. To do this, first download elevation data for the entire Viabundus dataset. I've reduced the zoom level a bit because it takes a long time to download and process.
+
+```{r}
+all_elevation = get_elev_raster(edges_sf, z=7, src = "aws")
+
+```
+
+Use the full raster to get slope data for all the roads:
+
+```{r}
+
+edges_sf$slope = slope_raster(edges_sf, e = all_elevation)
+
+```
+
+Create a new weight column in the roads dataset, taking the slope of each road into account using some kind of appropriate formula. I've done a very exaggerated one here, so we can easily see changes in the routing:
+
+```{r}
+edges_sf  = edges_sf %>% mutate(weight =  Length + Length * (slope*1000))
+
+```
+
+Now, create an sfnetworks object and run the pathing algorithm as above:
+
+```{r}
+sf_net_elev = as_sfnetwork(edges_sf, directed = F)
+
+sf_net_elev = sf_net_elev %>% 
+  st_join(nodes_sf, join = st_nearest_feature)
+
+paths = st_network_paths(sf_net_elev, from =utrecht_node_id, to = hamburg_node_id)
+
+ node_list = paths %>%
+  slice(1) %>%
+  pull(node_paths) %>%
+  unlist() %>% as_tibble()
+
+edge_list = paths %>%
+  slice(1) %>%
+  pull(edge_paths) %>%
+  unlist() %>% as_tibble()
+
+line_to_draw = edge_list %>% inner_join(sf_net %>% 
+  activate(edges) %>% 
+  as_tibble() %>% 
+  mutate(edge_id = 1:nrow(.)) , by = c('value' = 'edge_id'))
+
+line_to_draw = line_to_draw %>% st_as_sf()
+line_to_draw = line_to_draw %>% st_set_crs(4326)
+
+nodes_to_draw = node_list %>% inner_join(sf_net %>% 
+  activate(nodes) %>% 
+  as_tibble() %>% 
+  mutate(node_id = 1:nrow(.)) , by = c('value' = 'node_id'))
+
+nodes_to_draw = nodes_to_draw %>% st_as_sf()
+nodes_to_draw = nodes_to_draw %>% st_set_crs(4326)
+```
+
+And plot it - it now takes a totally different route, avoiding the hills around Amerongen in the Netherlands, for example. 
+
+```{r message=FALSE, warning=FALSE}
+library(leaflet)
+
+leaflet() %>% 
+  addTiles() %>% 
+  addCircles(data = nodes_to_draw, label = ~Name) %>% 
+  addPolylines(data  = line_to_draw)
+```
+
+Plot this in 3d to see the difference in elevation:
+
+```{r}
+line_to_draw$slope = slope_raster(line_to_draw, e = all_elevation)
+
+
+line_to_draw_3d = slope_3d(line_to_draw, all_elevation)
+
+plot_slope(line_to_draw_3d, title = "Elevation Data, Utrecht to Hamburg")
+
+```
+
+Perhaps more useful would be to incorporate the slope data in figuring out the total journey lengths, by devising a formula and using it in the calculations above, but this is still an interesting application!  
+
+# Conclusions
+
+Viabundus is an amazing resource, and sfnetworks makes it super easy to import and work with the data. The project team should be immensely proud of the result, and I'm very grateful to them for releasing it as open access data. 
+
+Converting the files into a 'tidy' data structure where necessary helped me to more easily sort and filter results, which might be worth keeping in mind. 
+
+I can imagine this having lots of really interesting applications to understanding postal routes, itineraries, and so forth. Another way to use the data would be to link to geo-temporal events on Wikidata (such as battles and sieges), and estimate the routes travelled by individuals in EMLO by their letter dates and locations. This could be a good way of figuring out intermediate stops travelled, and through that the likelihood of them being caught up in certain events.
+
+I'm also hoping to figure out how to correctly exclude certain nodes (or node types) when running the pathing algorithm (rather than just removing those nodes from the itinerary afterwards), perhaps by setting the weight of certain edges to Inf. This would make it possible to estimate a route which avoided tolls and staples, for example. 
+
+Hopefully, some day, we'll have similar data for most of Europe. I look forward to further updates from the project!
+
+***

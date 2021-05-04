@@ -1,0 +1,623 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+### Text and Models
+
+Digital Humanities is [often concerned](https://doi.org/10.1093/llc/fqw045) with creating *models* of text: a general name for a kind of representation of text which makes it in some way easier to interpret. TEI-encoded text is an example of a model: we take the raw material of a text document and add elements to it to make it easier to work with and analyse. Models are often further abstracted from the original text. One way we can represent text in a way that a machine can interpret is with a *word vector.* A word vector is simply a numerical representation of a word within a corpus (a body of text, often a series of documents), usually consisting of a series of numbers in a specified sequence. This type of representation is used for a variety of Natural Language Processing tasks - for instance measuring the similarity between two documents. This post uses a couple of R packages and a method for creating word vectors with a neural net, called [GloVe](https://nlp.stanford.edu/projects/glove/), to produce a series of vectors which give useful clues as to the semantic links between words in a corpus. The method is then used to analyse the printed summaries of the English State Papers, from [State Papers Online](https://www.gale.com/primary-sources/state-papers-online), and show how they can be used to understand how the association between words and concepts changed over the course of the seventeenth century.
+
+### What is a Word Vector, Then?
+
+Imagine you have two documents in a corpus. One of them is an article about pets, and the other is a piece of fiction about a team of crime fighting animal superheroes. We'll call them document A and document B. One way to represent the words within these documents as a vector would be to use the counts of each word per document.
+
+To do this, you could give each word a set of coordinates, $x$ and $y$, where $x$ is a count of how many times the word appears in document A and $y$ the number of times it appears in document B.
+
+The first step is to make a dataframe with the relevant counts:
+
+```{r message=FALSE, warning=FALSE, fig.height=5, fig.width=5}
+library(ggrepel)
+library(tidyverse)
+word_vectors = tibble(word = c('crufts', 'feed', 'cat', 'dog', 'mouse', 'rabbit', 'cape', 'hero' ),
+      x = c(10, 8, 6, 5, 6, 5, 2, 1),
+      y = c(0, 1, 3, 5, 8, 8, 10, 9))
+
+word_vectors
+```
+
+This data can be represented as a two-dimensional plot where each word is placed on the x and y axes based on their x and y values, like this:
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+ggplot() + 
+  geom_point(data = word_vectors, aes(x, y), size =4, alpha = .7) + 
+  geom_text_repel(data = word_vectors, aes(x, y, label = word)) + 
+  theme_bw() + 
+  labs(title = "Words Represented in Two-dimension Space") + 
+  theme(title = element_text(face = 'bold')) + 
+  scale_x_continuous(breaks = 1:10) + 
+  scale_y_continuous(breaks = 1:10)
+```
+
+Each word is represented as a *vector* of length 2: 'rabbit' is a vector containing two numbers: {5,8}, for example. Using very basic maths we can calculate the *euclidean* *distance* between any pair of words. More or less the only thing I can remember from secondary school math is how to calculate the distance between two points on a graph, using the following formula:
+
+$$
+\sqrt {\left( {x_1 - x_2 } \right)^2 + \left( {y_1 - y_2 } \right)^2 }
+$$
+
+Where $x$ is the first point and $y$ the second. This can easily be turned into a function in R, which takes a set of coordinates (the arguments x1 and x2) and returns the euclidean distance:
+
+```{r}
+euc.dist <- function(x1, x2) sqrt(sum((pointA - pointB) ^ 2))
+```
+
+To get the distance between **crufts** and **mouse**, set pointA as the $x$ and $y$ ccoordinates for the first entry in the dataframe of coordinates we created above, and pointB the coordinates for the fifth entry:
+
+```{r}
+pointA = c(word_vectors$x[1], word_vectors$y[1])
+pointB = c(word_vectors$x[5], word_vectors$y[5])
+
+euc.dist(pointA, pointB)
+
+```
+
+Representing a pair of words as vectors and measuring the distance between them is commonly used to suggest a semantic link between the two. For instance, the distance between **hero** and **cape** in this corpus is small, because they have similar properties: they both occur mostly in the document about superheroes and rarely in the document about pets.
+
+```{r}
+pointA = c(word_vectors$x[word_vectors$word == 'hero'], word_vectors$y[word_vectors$word == 'hero'])
+
+pointB = c(word_vectors$x[word_vectors$word == 'cape'], word_vectors$y[word_vectors$word == 'cape'])
+
+euc.dist(pointA, pointB)
+```
+
+This suggests that the model has 'learned' that in this corpus, **hero** and **cape** are semantically more closely linked than other pairs in the dataset. The difference between **cape** and **feed**, on the other hand, is large, because one appears often in the superheroes article and rarely in the other, and vice versa.
+
+```{r}
+pointA = c(word_vectors$x[word_vectors$word == 'cape'], word_vectors$y[word_vectors$word == 'cape'])
+
+pointB = c(word_vectors$x[word_vectors$word == 'feed'], word_vectors$y[word_vectors$word == 'feed'])
+
+euc.dist(pointA, pointB)
+```
+
+### Multi-Dimensional Vectors
+
+These vectors, each consisting of two numbers, can be thought of as two-dimensional vectors: a type which can be represented on a 2D scatterplot as $x$ and $y$. It's very easy to add a third dimension, $z$:
+
+```{r}
+word_vectors_3d = tibble(word = c('crufts', 'feed', 'cat', 'dog', 'mouse', 'rabbit', 'cape', 'hero' ),
+      x = c(10, 8, 6, 5, 6, 5, 2, 1),
+      y = c(0, 1, 3, 5, 8, 8, 10, 9),
+      z = c(1,3,5,2,7,8,4,3))
+```
+
+Just like the plot above, we can plot the words, this time in in three dimensions, using [Plotly](https://plotly.com/r/):
+
+```{r message=FALSE, warning=FALSE}
+library(plotly)
+
+plot_ly(data = word_vectors_3d, x =  ~x, y = ~y,z =  ~z, text = ~word) %>% add_markers()
+```
+
+You can start to understand how the words now cluster together in the 3D plot: **rabbit** and **mouse** are clustered together, but now in the third dimension they are further away from **dog**. We can use the same formula as above to calculate these distances, just by adding the z coordinates to the pointA and pointB vectors:
+
+```{r}
+pointA = c(word_vectors$x[word_vectors$word == 'dog'], word_vectors$y[word_vectors$word == 'dog'], word_vectors$z[word_vectors$word == 'dog'])
+pointB = c(word_vectors$x[word_vectors$word == 'mouse'], word_vectors$y[word_vectors$word == 'mouse'], word_vectors$z[word_vectors$word == 'mouse'])
+
+euc.dist(pointA, pointB)
+```
+
+The nice thing about the method is that while my brain starts to hurt when I think about more than three dimensions, the maths behind it doesn't care: you can just keep plugging in longer and longer vectors and it'll continue to calculate the distances as long as they are the same length. This means you can use this same formula not just when you have x and y coordinates, but also z, a, b, c, d, and so on for as long as you like. This is often called 'representing words in multi-dimensional euclidean space', or something similar which sounds great on grant applications but it's really just doing some plotting and measuring distances. Which means that if you represent all the words in a corpus as a long vector (series of coordinates), you can quickly measure the distance between any two.
+
+In a large corpus with a properly-constructed vector representation, the semantic relationships between the words start to make a lot of sense. What's more, because of vector math, you can add, subtract, divide and multiply the words together to get new vectors, and then find the closest to that. Here, we create a new vector, which is pointA - pointB (dog - mouse). Then loop through each vector and calculate the distance, and display in a new dataframe:
+
+```{r}
+pointC = pointA - pointB
+
+df_for_results = tibble()
+for(i in 1:8){
+  
+  pointA = c(word_vectors$x[i], word_vectors$y[i], word_vectors$z[i])
+  u = tibble(dist = euc.dist(pointC, pointA), word = word_vectors$word[i])
+  df_for_results = rbind(df_for_results, u)
+}
+
+df_for_results %>% arrange(dist)
+```
+
+The closest to dog - mouse is hero, with this vector representation.
+
+#### From Vectors to Word Embeddings
+
+These vectors are also known as word embeddings. Real algorithms base the vectors on more sophisticated metrics than that I used above. Some, such as [GloVe](https://nlp.stanford.edu/projects/glove/) record co-occurrence probabilities (the likelihood of every pair of words in a corpus to co-occur within a set 'window' of words either side), using a neural network, and pre-trained over enormous corpora of text. The resulting vectors are often used to represent the relationships between modern meanings of words, to [track semantic changes over time](https://dh2017.adho.org/abstracts/582/582.pdf), or to understand the history of [concepts](https://ccdkconceptlab.wordpress.com/), though it's worth pointing out they're only as representative as the corpus used (many use sources such as Wikipedia, or Reddit, mostly produced by white men and so there's a danger of biases towards those groups).
+
+Word embeddings are often critiqued as reflecting or propogating bias (I highly recommend Kaspar Beelen's post and tools to understand more about this) of their source texts. The source used here is a corpus consisting of the printed summaries of the Calendars of State Papers, which I've described in detail [here](https://networkingarchives.github.io/blog/2021/04/14/text-mining/). As such it is likely highly biased, but if the purpose of an analysis is historical, for example to understand how a concept was represented at a given time, by a specific group, in a particular body of text, the biases captured by word embeddings can be seen as a research strength rather than a weakness. The data is in no way representative of early modern text more generally, and, what's more, the summaries were written in the 19th century and so will reflect what editors at the time thought was important. In these two ways, the corpus will reproduce a very particular wordview of a very specific group, at a very specific time. Because of this, can use the embeddings to get an idea of how certain words or ideas were semantically linked, *specifically in the corpus of calendar abstracts.* The data will not show us how early modern concepts were related, but it might show conceptual changes in words within the information apparatus of the state.
+
+The following instructions are adapted from the [project vignette](http://text2vec.org/glove.html) and [this tutorial](https://m-clark.github.io/text-analysis-with-R/word-embeddings.html). First, tokenise all the abstract text and remove very common words called stop words:
+
+```{r}
+library(text2vec)
+library(tidytext)
+library(textstem)
+data("stop_words")
+```
+
+Next, load and pre-process the abstract text:
+
+```{r}
+spo_raw = read_delim('/Users/yannryanpersonal/Documents/blog_posts/MOST RECENT DATA/fromto_all_place_mapped_stuart_sorted', delim = '\t', col_names = F )
+spo_mapped_people = read_delim('/Users/yannryanpersonal/Documents/blog_posts/MOST RECENT DATA/people_docs_stuart_200421', delim = '\t', col_names = F)
+
+load('/Users/yannryanpersonal/Documents/blog_posts/g')
+g = g %>% group_by(path) %>% summarise(value = paste0(value, collapse = "<br>"))
+
+spo_raw = spo_raw %>%
+mutate(X7 = str_replace(X7, "spo", "SPO")) %>%
+separate(X7, into = c('Y1', 'Y2', 'Y3'), sep = '/') %>%
+mutate(fullpath = paste0("/Users/Yann/Documents/non-Github/spo_xml/", Y1, '/XML/', Y2,"/", Y3)) %>% mutate(uniquecode = paste0("Z", 1:nrow(spo_raw), "Z"))
+
+withtext = left_join(spo_raw, g, by = c('fullpath' = 'path')) %>%
+left_join(spo_mapped_people %>% dplyr::select(X1, from_name = X2), by = c('X1' = 'X1'))%>%
+left_join(spo_mapped_people %>% dplyr::select(X1, to_name = X2), by = c('X2' = 'X1')) 
+```
+
+Tokenize the text using the `Tidytext` function `unnest_tokens()`, remove stop words, lemmatize the text (reduce the words to their stem) using `textstem`, and remove numbers. This creates a new dataset, with one row per word, plus.
+
+```{r}
+words = withtext %>% 
+  ungroup()  %>% 
+  select(document = X5, value, date = X3) %>%
+  unnest_tokens(word, value) %>% anti_join(stop_words)%>% 
+  mutate(word = lemmatize_words(word)) %>% 
+  filter(!str_detect(word, "[0-9]{1,}")) %>% mutate(word = str_remove(word, "\\'s"))
+```
+
+Create a 'vocabulary', which is just a list of each word found in the dataset and the times they occur, and 'prune' it to only words which occur at least five times.
+
+```{r}
+words_ls = list(words$word)
+
+it = itoken(words_ls, progressbar = FALSE)
+
+vocab = create_vocabulary(it)
+
+vocab = prune_vocabulary(vocab, term_count_min = 5)
+```
+
+With the vocabulary, construct a 'term co-occurence matrix': this is a matrix of rows and columns, counting all the times each word co-occurs with every other word, within a window which can be set with the argument `skip_grams_window =`. 5 seems to give me good results - I think because many of the documents are so short.
+
+```{r}
+vectorizer = vocab_vectorizer(vocab)
+
+# use window of 10 for context words
+tcm = create_tcm(it, vectorizer, skip_grams_window = 5)
+```
+
+Now use the GloVe algorithm to train the model and produce the vectors, with a set number of iterations: here we've used 20, which seems to give good results. `rank` here is the number of dimensions we want. `x_max` is the maximum number of co-occurrences the model will consider in total - giving it a relatively low maximum means that the whole thing won't be skewed towards a small numbre of words that occur together hundreds of times. `rank` sets the number of dimensions in the result. The algorithm can be quite slow, but as it's a relatively small dataset (in comparison to something like the entire English wikipedia), it shouldn't take too long to run - a couple of minutes for 20 iterations.
+
+```{r}
+
+glove = GlobalVectors$new(rank = 100, x_max = 100)
+
+wv_main = glove$fit_transform(tcm, n_iter = 20, convergence_tol = 0.00001)
+
+```
+
+GloVe results in two sets of word vectors, the main and the context. The authors of the GloVe package suggest that combining both results in higher-quality embeddings:
+
+```{r}
+wv_context = glove$components
+
+
+
+# Either word-vectors matrices could work, but the developers of the technique
+# suggest the sum/mean may work better
+word_vectors = wv_main + t(wv_context)
+
+
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+#load('shakes_word_vectors')
+```
+
+#### Reducing Dimensionality for Visualisation
+
+Now that's done, it'd be nice to visualise the results as a whole. This isn't actually necessary: as I mentioned earlier, the computer doesn't care how many dimensions you give it to work out the distances between words. However, in order to visualise the results as whole, we can reduce the 100 dimensions to two or three and plot the results. We can do this with an algorithm called [UMAP](https://pair-code.github.io/understanding-umap/)
+
+There are a number of parameters which can be set - most important is `n_components` which should be set to two or three so that the results can be plotted.
+
+```{r}
+library(umap)
+glove_umap <- umap(word_vectors, n_components = 3, metric = "cosine", n_neighbors = 25, min_dist = 0.01, spread=2)
+
+df_glove_umap <- as.data.frame(glove_umap$layout, stringsAsFactors = FALSE)
+
+# Add the labels of the words to the dataframe
+df_glove_umap$word <- rownames(df_glove_umap)
+colnames(df_glove_umap) <- c("UMAP1", "UMAP2", "UMAP3", "word")
+df_glove_umap$technique <- 'GloVe'
+cat(paste0('\n', 'Our GloVe embedding reduced to 2 dimensions:', '\n'))
+str(df_glove_umap)
+```
+
+Next, use Plotly as above to visualise the resulting three dimensions:
+
+```{r}
+plot_ly(data = df_glove_umap, x =  ~UMAP1, y = ~UMAP2, z =  ~UMAP3, text = ~word, alpha = .2, size = .1) %>% add_markers()
+```
+
+#### Results
+
+When it's finished, write a small function which calculates and displays the closest words in distance to a given word. Instead of using the euclidean distance formula above, we calculate the *cosine similarity*, which measures the angular distance between the words (this is better because it [corrects for one word appearing many times and another appearing very infrequently](https://cmry.github.io/notes/euclidean-v-cosine#:~:text=While%20cosine%20looks%20at%20the,though%20they%20were%20further%20away.)).
+
+```{r}
+
+ten_closest_words = function(word){
+
+word_result = word_vectors[word, , drop = FALSE] 
+
+cos_sim = sim2(x = word_vectors, y = word_result, method = "cosine", norm = "l2")
+
+
+head(sort(cos_sim[,1], decreasing = TRUE), 30)
+
+}
+
+```
+
+The function takes a single word as an argument and returns the twenty closest word vectors, by cosine distance. What are the closest in useage to 'king'?
+
+```{r}
+ten_closest_words('king')
+```
+
+Unsurprisingly, a word that is often interchangeable with King, Majesty, is the closest, followed by 'Queen' - also obviously interchangeable with King, depending on the circumstances.
+
+Word embeddings are often used to understand different and changing [gender representations](https://lab.kb.nl/about-us/blog/introduction-gender-bias-historical-newspapers). How are gendered words represented in the State Papers abstracts? First of all, wife:
+
+```{r}
+ten_closest_words('wife')
+```
+
+Unsurprisingly wife is most similar to other words relating to family. What about husband?
+
+```{r}
+ten_closest_words('husband')
+```
+
+Husband is mostly similar but with some interesting different associations: 'widow', 'die', 'petition', 'debt', and 'prisoner', reflecting the fact that there is a large group of petitions in the State Papers written by women looking for pardons or clemency for their husbands, particularly following the Monmouth Rebellion in 1683.
+
+Looking at the closest words to place names gives some interesting associations. Amsterdam is associated with terms related to shipping and trade:
+
+```{r}
+ten_closest_words('amsterdam')
+
+```
+
+Whereas Rome is very much associated with religion and ecclesiastical politics:
+
+```{r}
+ten_closest_words('rome')
+```
+
+#### More Complex Vector Tasks
+
+As well as finding the most similar words, we can also perform arithmetic on the vectors. What is the closest word to book and news:
+
+```{r}
+
+sum = word_vectors["book", , drop = F] +
+ word_vectors["news", , drop = F]
+
+cos_sim_test = sim2(x = word_vectors, y = sum, method = "cosine", norm = "l2")
+
+head(sort(cos_sim_test[,1], decreasing = T), 20)
+
+```
+
+It is also a way of finding analogies: so, for example, Paris - France + Germany should equal to 'Berlin', because Berlin is like the Paris of France. Is that what we get?
+
+```{r}
+test = word_vectors["paris", , drop = F] -
+  word_vectors["france", , drop = F] +
+  word_vectors["germany", , drop = F]
+  
+#+
+ # shakes_word_vectors["letter", , drop = F]
+
+cos_sim_test = sim2(x = word_vectors, y = test, method = "cosine", norm = "l2")
+
+head(sort(cos_sim_test[,1], decreasing = T), 20)
+```
+
+After Germany and Paris, the most similar to Paris - France + Germany is Brussels: not the correct answer, but a close enough guess!
+
+We can try other analogies: pen - letter + book should in theory give some word related to printing and book production such as print, or press, or maybe type (Think pen is to letter as X is to book).
+
+```{r}
+test = word_vectors["pen", , drop = F] -
+  word_vectors["letter", , drop = F] +
+    word_vectors["book", , drop = F]
+  
+cos_sim_test = sim2(x = word_vectors, y = test, method = "cosine", norm = "l2")
+
+head(sort(cos_sim_test[,1], decreasing = T), 20)
+```
+
+Not bad - printer is in the top 20! The closest is ink, plus some other book-production-related words like pamphlet. Though some of these words can also be associated with manuscript production, we *could* be generous and say that they are sort of to a book as a pen is to a letter!
+
+#### Change in Semantic Relations Over Time
+
+We can also look for change in semantic meaning over time. First, divide the text into four separate sections, one for each reign:
+
+```{r}
+library(lubridate)
+james_i = withtext %>% 
+  mutate(year = year(ymd(X4))) %>% 
+  filter(year %in% 1603:1624) %>% 
+  ungroup()  %>% 
+  select(document = X5, value, date = X3) %>%
+  unnest_tokens(word, value) %>% 
+  anti_join(stop_words) %>% 
+  mutate(word = lemmatize_words(word)) %>% filter(!str_detect(word, "[0-9]{1,}"))
+
+charles_i = withtext %>% 
+  mutate(year = year(ymd(X4))) %>% 
+  filter(year %in% 1625:1648) %>% 
+  ungroup()  %>% 
+  select(document = X5, value, date = X3) %>%
+  unnest_tokens(word, value) %>% anti_join(stop_words)%>% 
+  mutate(word = lemmatize_words(word)) %>% filter(!str_detect(word, "[0-9]{1,}"))
+
+commonwealth = withtext %>% 
+  mutate(year = year(ymd(X4))) %>% 
+  filter(year %in% 1649:1659) %>% 
+  ungroup()  %>% 
+  select(document = X5, value, date = X3) %>%
+  unnest_tokens(word, value) %>% anti_join(stop_words)%>% 
+  mutate(word = lemmatize_words(word)) %>% filter(!str_detect(word, "[0-9]{1,}"))
+
+charles_ii = withtext %>% 
+  mutate(year = year(ymd(X4))) %>% 
+  filter(year %in% 1660:1684) %>% 
+  ungroup()  %>% 
+  select(document = X5, value, date = X3) %>%
+  unnest_tokens(word, value) %>% anti_join(stop_words)%>% 
+  mutate(word = lemmatize_words(word)) %>% filter(!str_detect(word, "[0-9]{1,}"))
+
+james_ii_w_m_ann = withtext %>% 
+  mutate(year = year(ymd(X4))) %>% 
+  filter(year %in% 1685:1714) %>% 
+  ungroup()  %>% 
+  select(document = X5, value, date = X3) %>%
+  unnest_tokens(word, value) %>% anti_join(stop_words) %>% 
+  mutate(word = lemmatize_words(word)) %>% filter(!str_detect(word, "[0-9]{1,}"))
+
+```
+
+Now run the same scripts as above, on each of these sections:
+
+```{r}
+james_i_words_ls = list(james_i$word)
+it = itoken(james_i_words_ls, progressbar = FALSE)
+james_i_vocab = create_vocabulary(it)
+james_i_vocab = prune_vocabulary(james_i_vocab, term_count_min = 5)
+
+vectorizer = vocab_vectorizer(james_i_vocab)
+
+# use window of 10 for context words
+james_i_tcm = create_tcm(it, vectorizer, skip_grams_window = 5)
+
+james_i_glove = GlobalVectors$new(rank = 100, x_max = 100)
+
+james_i_wv_main = james_i_glove$fit_transform(james_i_tcm, n_iter = 20, convergence_tol = 0.00001)
+
+
+james_i_wv_context = james_i_glove$components
+
+james_i_word_vectors = james_i_wv_main + t(james_i_wv_context)
+
+
+```
+
+```{r}
+charles_i_words_ls = list(charles_i$word)
+it = itoken(charles_i_words_ls, progressbar = FALSE)
+charles_i_vocab = create_vocabulary(it)
+charles_i_vocab = prune_vocabulary(charles_i_vocab, term_count_min = 5)
+
+vectorizer = vocab_vectorizer(charles_i_vocab)
+
+# use window of 10 for context words
+charles_i_tcm = create_tcm(it, vectorizer, skip_grams_window = 5)
+
+charles_i_glove = GlobalVectors$new(rank = 100, x_max = 100)
+
+charles_i_wv_main = charles_i_glove$fit_transform(charles_i_tcm, n_iter = 20, convergence_tol = 0.00001)
+
+
+charles_i_wv_context = charles_i_glove$components
+
+charles_i_word_vectors = charles_i_wv_main + t(charles_i_wv_context)
+
+
+```
+
+```{r}
+commonwealth_words_ls = list(commonwealth$word)
+it = itoken(commonwealth_words_ls, progressbar = FALSE)
+commonwealth_vocab = create_vocabulary(it)
+commonwealth_vocab = prune_vocabulary(commonwealth_vocab, term_count_min = 5)
+
+vectorizer = vocab_vectorizer(commonwealth_vocab)
+
+# use window of 10 for context words
+commonwealth_tcm = create_tcm(it, vectorizer, skip_grams_window = 5)
+
+commonwealth_glove = GlobalVectors$new(rank = 100, x_max = 100)
+
+commonwealth_wv_main = commonwealth_glove$fit_transform(commonwealth_tcm, n_iter = 20, convergence_tol = 0.00001)
+
+
+commonwealth_wv_context = commonwealth_glove$components
+
+# dim(shakes_wv_context)
+
+# Either word-vectors matrices could work, but the developers of the technique
+# suggest the sum/mean may work better
+commonwealth_word_vectors = commonwealth_wv_main + t(commonwealth_wv_context)
+
+
+```
+
+```{r}
+charles_ii_words_ls = list(charles_ii$word)
+it = itoken(charles_ii_words_ls, progressbar = FALSE)
+charles_ii_vocab = create_vocabulary(it)
+charles_ii_vocab = prune_vocabulary(charles_ii_vocab, term_count_min = 5)
+
+vectorizer = vocab_vectorizer(charles_ii_vocab)
+
+# use window of 10 for context words
+charles_ii_tcm = create_tcm(it, vectorizer, skip_grams_window = 5)
+
+charles_ii_glove = GlobalVectors$new(rank = 100, x_max = 100)
+
+charles_ii_wv_main = charles_ii_glove$fit_transform(charles_ii_tcm, n_iter = 20, convergence_tol = 0.00001)
+
+
+charles_ii_wv_context = charles_ii_glove$components
+
+# dim(shakes_wv_context)
+
+# Either word-vectors matrices could work, but the developers of the technique
+# suggest the sum/mean may work better
+charles_ii_word_vectors = charles_ii_wv_main + t(charles_ii_wv_context)
+
+
+```
+
+```{r}
+james_ii_w_m_ann_words_ls = list(james_ii_w_m_ann$word)
+it = itoken(james_ii_w_m_ann_words_ls, progressbar = FALSE)
+james_ii_w_m_ann_vocab = create_vocabulary(it)
+james_ii_w_m_ann_vocab = prune_vocabulary(james_ii_w_m_ann_vocab, term_count_min = 5)
+
+vectorizer = vocab_vectorizer(james_ii_w_m_ann_vocab)
+
+# use window of 10 for context words
+james_ii_w_m_ann_tcm = create_tcm(it, vectorizer, skip_grams_window = 5)
+
+james_ii_w_m_ann_glove = GlobalVectors$new(rank = 100, x_max = 100)
+
+james_ii_w_m_ann_wv_main = james_ii_w_m_ann_glove$fit_transform(james_ii_w_m_ann_tcm, n_iter = 20, convergence_tol = 0.00001)
+
+
+james_ii_w_m_ann_wv_context = james_ii_w_m_ann_glove$components
+
+# dim(shakes_wv_context)
+
+# Either word-vectors matrices could work, but the developers of the technique
+# suggest the sum/mean may work better
+james_ii_w_m_ann_word_vectors = james_ii_w_m_ann_wv_main + t(james_ii_w_m_ann_wv_context)
+
+
+```
+
+Write a function as above, this time with two arguments, so we can specify both the word and the relevant reign:
+
+```{r}
+
+top_ten_function = function(word, period){
+  
+  
+  if(period == 'james_i'){
+    
+  vectors = james_i_word_vectors[word, , drop = FALSE] 
+  cos_sim = sim2(x = james_i_word_vectors, y = vectors, method = "cosine", norm = "l2")
+
+
+}
+  else if(period == 'charles_i'){  vectors = charles_i_word_vectors[word, , drop = FALSE] 
+  cos_sim = sim2(x = charles_i_word_vectors, y = vectors, method = "cosine", norm = "l2")
+  
+  } 
+  else if(period == 'commonwealth')  { 
+    
+    vectors = commonwealth_word_vectors[word, , drop = FALSE] 
+  cos_sim = sim2(x = commonwealth_word_vectors, y = vectors, method = "cosine", norm = "l2")
+  
+  }
+  
+  else if(period == 'charles_ii'){
+    
+    vectors = charles_ii_word_vectors[word, , drop = FALSE] 
+  cos_sim = sim2(x = charles_ii_word_vectors, y = vectors, method = "cosine", norm = "l2")
+  
+  }
+  
+  else {
+    
+  vectors = james_ii_w_m_ann_word_vectors[word, , drop = FALSE] 
+  cos_sim = sim2(x = james_ii_w_m_ann_word_vectors, y = vectors, method = "cosine", norm = "l2")
+  }
+  
+head(sort(cos_sim[,1], decreasing = TRUE), 20)
+
+
+}
+
+
+```
+
+Write a second function, which takes a word and returns the ten closest words for each reign:
+
+```{r}
+first_in_each= function(word) {
+  
+  rbind(top_ten_function(word, 'james_i') %>% tibble::enframe() %>% arrange(desc(value)) %>% slice(2:11) %>% mutate(reign ='james_i' ),
+     top_ten_function(word, 'charles_i') %>% tibble::enframe() %>% arrange(desc(value)) %>% slice(2:11) %>% mutate(reign ='charles_i' ),
+     top_ten_function(word, 'commonwealth') %>% tibble::enframe() %>% arrange(desc(value)) %>% slice(2:11) %>% mutate(reign ='commonwealth' ),
+     top_ten_function(word, 'charles_ii') %>% tibble::enframe() %>% arrange(desc(value)) %>% slice(2:11) %>% mutate(reign ='charles_ii' ),
+     top_ten_function(word, 'james_ii_w_m_ann') %>% tibble::enframe() %>% arrange(desc(value)) %>% slice(2:11) %>% mutate(reign ='james_ii_w_m_ann' ))%>% 
+  group_by(reign) %>% 
+  mutate(rank = rank(value)) %>% 
+  ggplot() + 
+  geom_text(aes(x = factor(reign, levels = c('james_i', 'charles_i', 'commonwealth', 'charles_ii', 'james_ii', 'james_ii_w_m_ann')), y = rank, label = name, color = name)) + theme_void() +
+  theme(legend.position = 'none', 
+        axis.text.x = element_text(face = 'bold'), 
+        ) 
+  
+  }
+
+```
+
+This can show us the changing associations of particular words over time. Take 'match':
+
+```{r}
+first_in_each('match') 
+```
+
+In the reign of James I, 'match' is semantically linked to words relating to the [Spanish Match](https://en.wikipedia.org/wiki/Spanish_match): a proposed match between Charles I and the Infanta Maria Anna of Spain. During Charles I's reign and afterwards, the meaning changes completely - now the closest words are all military. In the final section of the data, the semantic link returns again to mostly words about marriage - this time it's not so obvious why the words are associated, but it's probably relating to the marriage of Philippe II, Duke of Orléans to Françoise Marie de Bourbon, in 1692 - Philippe II was regent of France until 1723.
+
+#### Conclusions
+
+The primary purpose of this technique in the 'real world' isn't really to understand the semantic relationship between words for its own sake, but rather is most often used as part of an [NLP pipeline](https://medium.com/broadhorizon-cmotions/using-word-embedding-models-for-prediction-purposes-34b5bc93c6f), where the embeddings are fed through a neural net to make predictions about text.
+
+However, the word embeddings trained on the text of the Calendars is still a useful way to think about how these texts are constructed and the sort of 'mental map' they represent. We've seen that it often produces expected results (such as *King* being closest to *Majesty*), even in complex tasks: with the analogy pen is to letter as X is to book, X is replaced by *ink*, *printer*, *pamphlet*, and some other relevant book-production words. Certain words can be seen to change over time: *match* is a good example, which is linked to marriage at some times, and weaponry at others, depending on the time period. Many of these word associations reflect biases in the data, but in certain circumstances this can be a strength rather than a weakness. The danger is not investigating the biases, but rather when we are reductive and try to claim that the word associations seen here are in any way representative of how society at large thought about these concepts more generally. On their own terms, the embeddings can be a powerful historical tool to understand the linked meanings within a discrete set of sources.
+
+#### Further Reading
+
+[Good basic introduction to word vectors](https://www.wwp.northeastern.edu/outreach/seminars/wem_2019-07/presentations/word_vectors/word_vectors_intro_lecture.xhtml)
+
+[Good tutorial using GloVe and R](https://www.theanalyticslab.nl/nlpblogs_2_training_word_embedding_models_and_visualize_results/). Part of a larger series on NLP.
+
+[Good article on dimensionality reduction, with a particularly good explanation of word vectors](https://towardsdatascience.com/word-vectors-and-decoding-autoencoder-for-dimensionality-reduction-407815ead4b7)
+
+[Word Embeddings in Humanities](https://dhh.uni.lu/2018/12/11/word-embeddings-in-humanities/)
+
+[Gender bias in historical newspapers](https://lab.kb.nl/about-us/blog/introduction-gender-bias-historical-newspapers)
